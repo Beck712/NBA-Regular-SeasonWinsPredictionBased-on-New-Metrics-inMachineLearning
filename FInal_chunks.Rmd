@@ -1,0 +1,417 @@
+---
+title: NBA Regular Season Wins Prediction Based on New Metrics in Machine Learning
+author: "Beck"
+date: "2024-05-03"
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+```{r,message=FALSE, warning=FALSE}
+options(warn = -1)
+library(dplyr)
+library(fmsb)
+library(reshape2)
+library(ggplot2)
+library(ggcorrplot)
+library(lmtest)
+library(readxl)
+library(caret)
+library(randomForest)
+library(ROCR)
+library(Hmisc)
+library(car)
+library(Metrics)
+library(glmnet)
+library(class)
+library(gbm)
+library(e1071)
+
+Team_Summaries<- read_excel("C:/Users/ZHOU/Desktop/polygence/datasets/useful/Team Summaries.xlsx")
+Team_Totals <- read_excel("C:/Users/ZHOU/Desktop/polygence/datasets/useful/Team Totals.xlsx")
+Opponent_Totals <-read_excel("C:/Users/ZHOU/Desktop/polygence/datasets/useful/Opponent Totals.xlsx")
+wins2024 <- read_excel("C:/Users/ZHOU/Desktop/polygence/datasets/useful/wins2024.xlsx")
+Per36Mins <- read_excel("C:/Users/ZHOU/Desktop/polygence/datasets/useful/Per 36 Minutes.xlsx")
+
+
+RosterPer36<-Per36Mins%>%
+        filter(!(Per36Mins$mp<=1968))
+RosterPer36<-RosterPer36[,-c(5,7,9,12)]
+player1<-RosterPer36[c(RosterPer36$seas_id==26641),c(30,24,25,26,27,28,15,18)]
+player2<-RosterPer36[c(RosterPer36$seas_id==26682),c(30,24,25,26,27,28,15,18)]
+cmp1 <- data.frame(matrix(nrow = 4, ncol = 8))
+cmp1[3,]<-player1
+cmp1[4,]<-player2
+cmp1[1,]<-c(30,10,10,5,5,5,1,1)
+cmp1[2,]<-c(0,0,0,0,0,0,0,0)
+colnames(cmp1)<-c("PTS","REB","AST","STL","BLK","TOV","3PG%","2PG%")
+rownames(cmp1)<-c("1","2","player1","player2")
+
+cmp1[]<-lapply(cmp1,as.numeric)
+
+colors_in=c(rgb(0.8,0.2,0.5,0.4),rgb(0.2,0.5,0.5,0.4))
+colors_border=c(rgb(0.8,0.2,0.5,0.9),rgb(0.2,0.5,0.5,0.9))
+
+radarchart(cmp1,pcol=colors_border,pfcol=colors_in)
+legend(x=1.3, y=1.4, legend = rownames(cmp1[-c(1,2),]), bty = "n",pch=20 , col=colors_in , text.col = "grey", cex=1.2, pt.cex=2)
+
+Ayo<-RosterPer36[c(RosterPer36$seas_id==31175),c(30,24,25,26,27,28,15,18)]
+Bog<-RosterPer36[c(RosterPer36$seas_id==31187),c(30,24,25,26,27,28,15,18)]
+cmp2 <- data.frame(matrix(nrow = 4, ncol = 8))
+
+cmp2[3,]<-Ayo
+cmp2[4,]<-Bog
+cmp2[1,]<-c(30,10,10,5,5,5,1,1)
+cmp2[2,]<-c(0,0,0,0,0,0,0,0)
+colnames(cmp2)<-c("PTS","REB","AST","STL","BLK","TOV","3PG%","2PG%")
+rownames(cmp2)<-c("1","2","Ayo.D","Bogdan.B")
+cmp2[]<-lapply(cmp2,as.numeric)
+
+radarchart(cmp2,pcol=colors_border,pfcol=colors_in)
+legend(x=1.3, y=1.4, legend = rownames(cmp2[-c(1,2),]), bty = "n",pch=20 , col=colors_in , text.col = "grey", cex=1.2, pt.cex=2)
+
+rw1<-RosterPer36[c(RosterPer36$seas_id==25634),c(30,24,25,26,27,28,15,18)]
+rw2<-RosterPer36[c(RosterPer36$seas_id==26815),c(30,24,25,26,27,28,15,18)]
+cmp3 <- data.frame(matrix(nrow = 4, ncol = 8))
+
+cmp3[3,]<-rw1
+cmp3[4,]<-rw2
+cmp3[1,]<-c(30,10,10,5,5,5,1,1)
+cmp3[2,]<-c(0,0,0,0,0,0,0,0)
+colnames(cmp3)<-c("PTS","REB","AST","STL","BLK","TOV","3PG%","2PG%")
+cmp3[]<-lapply(cmp3,as.numeric)
+rownames(cmp3)<-c("1","2","2014-2015","2016-2017")
+
+radarchart(cmp3,pcol=colors_border,pfcol=colors_in)
+legend(x=1.3, y=1.4, legend = rownames(cmp3[-c(1,2),]), bty = "n",pch=20 , col=colors_in , text.col = "grey", cex=1.2, pt.cex=2)
+
+opt<-Opponent_Totals[-c(1:31,1253:1845),-2]
+opt<-opt%>%
+  filter(!(opt$team=="League Average"))
+
+tt<-Team_Totals[-c(1:31,1253:1845),]
+tt<-tt%>%
+  filter(!(tt$team=="League Average"))
+
+ts<-Team_Summaries[c(32:1252),]
+ts<-ts%>%
+  filter(!(ts$team=="League Average"))
+ts1<-ts[,c(7,23)]
+
+
+rf<-as.data.frame(ts1[,1])
+rf <- rf %>% mutate_all(as.numeric)
+opp_possessions <- 0.5 * (opt$opp_fga + 0.4 * opt$opp_fta -  1.07*(opt$opp_orb / (opt$opp_orb + tt$drb)) * (opt$opp_fga- opt$opp_fg) + opt$opp_tov)
+opp_pace<-480*(opp_possessions)/(tt$mp)
+possessions<-tt$mp*ts$pace/480
+adj<-0.01*ts$pace
+opp_adj<-0.01*opp_pace
+
+rf$orb_percent<-ts$orb_percent*adj
+rf$drb_percent <- (tt$drb / (tt$drb + opt$opp_orb)) * 100*opp_adj
+rf$tov_percent<-ts$tov_percent/adj
+  opp_tov_percent<-ts$opp_tov_percent/(opp_adj)
+rf$tov_percent_ratio<-log(ts$tov_percent/opp_tov_percent)
+rf$pace_ratio<-log(ts$pace/opp_pace)
+rf$pace<-ts$pace
+  stl_rate<-(tt$stl*opp_adj)/opp_possessions
+  opp_stl_rate<-(opt$opp_stl*adj)/possessions
+rf$stl_rate<-stl_rate
+rf$stl_rate_ratio<-log(stl_rate/opp_stl_rate)
+rf$ast_percent<-(tt$ast*adj)/tt$fg
+  opp_ast_percent<-(opt$opp_ast*opp_adj)/opt$opp_fg
+rf$ast_percent_ratio<-log(rf$ast_percent/opp_ast_percent)
+  aft<-1/(0.88*tt$ft_percent)
+  ax3p<-1/(1.5*tt$x3p_percent)
+  ax2p<-1/(tt$x2p_percent)
+rf$aFG_Percent<-3/(aft+ax3p+ax2p)
+rf$aFG_Percent<-adj*rf$aFG_Percent
+  opp_aft<-1/(0.88*opt$opp_ft_percent)
+  opp_ax3p<-1/(1.5*opt$opp_x3p_percent)
+  opp_ax2p<-1/(opt$opp_x2p_percent)
+  opp_aFG_Percent<-3/(opp_aft+opp_ax3p+opp_ax2p)
+  opp_aFG_Percent<-opp_adj*opp_aFG_Percent
+rf$aFG_Percent_ratio<-log(rf$aFG_Percent/opp_aFG_Percent)
+
+set.seed(123)
+data<-rf
+data <- na.omit(data)
+data_scaled <- as.data.frame((data[ , -which(names(data) == "w")]))
+data_scaled$w <- rf$w
+
+
+set.seed(123)
+train_data <- data_scaled[284:1133, ]
+test_data <- data_scaled[1:283, ]
+
+set.seed(123)
+k_values <- seq(1, 20, 1)
+k_mse <- sapply(k_values, function(k) {
+    knn_predictions <- knn(train = train_data[ , -which(names(train_data) == "w")], 
+                           test = test_data[ , -which(names(test_data) == "w")], 
+                           cl = train_data$w, k = k)
+    mean((as.numeric(as.character(knn_predictions)) - test_data$w)^2)
+})
+
+best_k <- k_values[which.min(k_mse)]
+knn_predictions <- knn(train = train_data[ , -which(names(train_data) == "w")], 
+                       test = test_data[ , -which(names(test_data) == "w")], 
+                       cl = train_data$w, k = best_k)
+
+set.seed(123)
+rf_model <- randomForest(w ~ ., data = train_data,n_trees=1000)
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+
+set.seed(123)
+gbm_model <- gbm(w ~ ., data = train_data, distribution = "gaussian", n.trees = 1000, interaction.depth = 4, shrinkage = 0.01)
+gbm_predictions <- predict(gbm_model, newdata = test_data, n.trees = 200)
+
+set.seed(123)
+svr_model <- svm(w ~ ., data = train_data, kernel = "radial", cost = 1, epsilon = 0.1,type="eps-regression")
+svr_predictions <- predict(svr_model, newdata = test_data)
+
+
+evaluate_model <- function(actual, predicted, num_predictors) {
+    mae <- mean(abs(actual - predicted))
+    return(c(MAE = mae))
+}
+
+  
+knn_eval <- evaluate_model(test_data$w, as.numeric(as.character(knn_predictions)), ncol(train_data) - 1)
+
+rf_eval <- evaluate_model(test_data$w, rf_predictions, ncol(train_data) - 1)
+
+gbm_eval <- evaluate_model(test_data$w, gbm_predictions, ncol(train_data) - 1)
+
+svr_eval <- evaluate_model(test_data$w, svr_predictions, ncol(train_data) - 1)
+
+rf_mae <- rf_eval["MAE"]
+knn_mae <- knn_eval["MAE"]
+gbm_mae <- gbm_eval["MAE"]
+svr_mae <- svr_eval["MAE"]
+
+show <- data.frame(
+  MAE = c(rf_mae, knn_mae, gbm_mae, svr_mae)
+)
+show <- t(show)
+colnames(show) <- c("Random Forest", "KNN", "Gradient Boosting Regression", "svr")
+
+df<-data.frame(
+  model=c("RF", "KNN", "GBM", "SVR"),
+  MAE=c(rf_mae, knn_mae, gbm_mae, svr_mae)
+)
+
+
+tt2<-tt[c(13,16,19,25,27)]
+opt2<-opt[c(12,15,18,24,26)]
+data<-cbind(tt2,opt2)
+
+data$tov_percent<-ts$tov_percent
+data$stl_rate<-(tt$stl)/opp_possessions
+data$orb_percent<-ts$orb_percent
+data$drb_percent <- (tt$drb / (tt$drb + opt$opp_orb)) * 100
+data$ast_percent<-(tt$ast)/tt$fg
+data$opp_ast_percent<-(opt$opp_ast)/opt$opp_fg
+
+data <- na.omit(data)
+#data_scaled <- as.data.frame(scale(data))
+data_scaled<-data
+data_scaled$w<-ts1$w
+data_scaled<- data_scaled %>% mutate_all(as.numeric)
+set.seed(123)
+train_data <- data_scaled[284:1133, ]
+test_data <- data_scaled[1:283, ]
+
+
+set.seed(123)
+k_values <- seq(1, 20, 1)
+k_mse <- sapply(k_values, function(k) {
+    knn_predictions <- knn(train = train_data[ , -which(names(train_data) == "w")], 
+                           test = test_data[ , -which(names(test_data) == "w")], 
+                           cl = train_data$w, k = k)
+    mean((as.numeric(as.character(knn_predictions)) - test_data$w)^2)
+})
+
+best_k <- k_values[which.min(k_mse)]
+knn_predictions <- knn(train = train_data[ , -which(names(train_data) == "w")], 
+                       test = test_data[ , -which(names(test_data) == "w")], 
+                       cl = train_data$w, k = best_k)
+
+set.seed(123)
+rf_model <- randomForest(w ~ ., data = train_data,n_trees=1000)
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+set.seed(123)
+gbm_model <- gbm(w ~ ., data = train_data, distribution = "gaussian", n.trees = 1000, interaction.depth = 4, shrinkage = 0.01)
+gbm_predictions <- predict(gbm_model, newdata = test_data, n.trees = 200)
+
+set.seed(123)
+svr_model <- svm(w ~ ., data = train_data, kernel = "radial", cost = 1, epsilon = 0.1,type="eps-regression")
+svr_predictions <- predict(svr_model, newdata = test_data)
+
+knn_eval <- evaluate_model(test_data$w, as.numeric(as.character(knn_predictions)), ncol(train_data) - 1)
+
+rf_eval <- evaluate_model(test_data$w, rf_predictions, ncol(train_data) - 1)
+
+gbm_eval <- evaluate_model(test_data$w, gbm_predictions, ncol(train_data) - 1)
+
+svr_eval <- evaluate_model(test_data$w, svr_predictions, ncol(train_data) - 1)
+
+rf_mae <- rf_eval["MAE"]
+knn_mae <- knn_eval["MAE"]
+gbm_mae <- gbm_eval["MAE"]
+svr_mae <- svr_eval["MAE"]
+
+raw<- data.frame(  MAE = c(rf_mae, knn_mae, gbm_mae, svr_mae))
+raw<- t(raw)
+colnames(raw) <- c("Random Forest", "KNN", "Gradient Boosting Regression", "svr")
+
+ratio <- data.frame(matrix(NA, nrow = 2, ncol = 4))
+ratio[1, 1] <- round(log(show[1, 1] / raw[1, 1]),4)
+ratio[1, 2] <- round(log(show[1, 2] / raw[1, 2]),4)
+ratio[1, 3] <- round(log(show[1, 3] / raw[1, 3]),4)
+ratio[1, 4] <- round(log(show[1, 4] / raw[1, 4]),4)
+ratio[2,] <- c("RF_5.36/6.29", "KNN_10.34/11.46", "GBM_5.61/7.45", "SVR_5.60/5.39")
+ratio<-t(ratio)
+ratio<-as.data.frame(ratio)
+ratio[,1]<-as.numeric(ratio[,1])
+colnames(ratio)<-c("value","model")
+
+data <- ratio
+ggplot(data, aes(x = model, y = value)) +
+  geom_bar(stat = "identity", aes(fill = value >= 0), position = "identity", show.legend = FALSE) +
+  scale_fill_manual(values = c("orange","steelblue")) +
+  labs(title = "The Relative Change in MAE",
+       x = "Model and Its Change in MAE", y = "Natural Logarithm of MAE Ratio") +
+  theme_minimal() +
+  geom_text(aes(label = value), vjust = ifelse(data$value >= 0, -0.5, 1), color = "black", size = 3)
+
+
+set.seed(123)
+rows_to_remove <- floor(0.5 * nrow(rf))
+remove_indices <- sample(nrow(rf), size = rows_to_remove)
+rf_stability <- rf[-remove_indices, ]
+data<-rf_stability
+data_scaled <- as.data.frame(data)
+data_scaled$w <- data$w
+train_data <- data_scaled[143:567, ]
+test_data <- data_scaled[1:142,]
+
+set.seed(123)
+k_values <- seq(1, 20, 1)
+k_mse <- sapply(k_values, function(k) {
+    knn_predictions <- knn(train = train_data[ , -which(names(train_data) == "w")], 
+                           test = test_data[ , -which(names(test_data) == "w")], 
+                           cl = train_data$w, k = k)
+    mean((as.numeric(as.character(knn_predictions)) - test_data$w)^2)
+})
+
+best_k <- k_values[which.min(k_mse)]
+knn_predictions <- knn(train = train_data[ , -which(names(train_data) == "w")], 
+                       test = test_data[ , -which(names(test_data) == "w")], 
+                       cl = train_data$w, k = best_k)
+
+set.seed(123)
+rf_model <- randomForest(w ~ ., data = train_data,n_trees=1000)
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+set.seed(123)
+gbm_model <- gbm(w ~ ., data = train_data, distribution = "gaussian", n.trees = 1000, interaction.depth = 4, shrinkage = 0.01)
+gbm_predictions <- predict(gbm_model, newdata = test_data, n.trees = 200)
+
+#svr
+set.seed(123)
+svr_model <- svm(w ~ ., data = train_data, kernel = "radial", cost = 1, epsilon = 0.1,type="eps-regression")
+svr_predictions <- predict(svr_model, newdata = test_data)
+
+
+knn_eval <- evaluate_model(test_data$w, as.numeric(as.character(knn_predictions)), ncol(train_data) - 1)
+
+rf_eval <- evaluate_model(test_data$w, rf_predictions, ncol(train_data) - 1)
+
+gbm_eval <- evaluate_model(test_data$w, gbm_predictions, ncol(train_data) - 1)
+
+svr_eval <- evaluate_model(test_data$w, svr_predictions, ncol(train_data) - 1)
+
+rf_mae <- rf_eval["MAE"]
+knn_mae <- knn_eval["MAE"]
+gbm_mae <- gbm_eval["MAE"]
+svr_mae <- svr_eval["MAE"]
+
+lesssp <- data.frame(
+  MAE = c(rf_mae, knn_mae, gbm_mae, svr_mae)
+)
+lesssp <- t(lesssp)
+colnames(lesssp) <- c("Random Forest", "KNN", "Gradient Boosting Regression", "SVR")
+
+ratio <- data.frame(matrix(NA, nrow = 2, ncol = 4))
+ratio[1, 1] <- round(log(show[1, 1] / lesssp[1, 1]),4)
+ratio[1, 2] <- round(log(show[1, 2] / lesssp[1, 2]),4)
+ratio[1, 3] <- round(log(show[1, 3] / lesssp[1, 3]),4)
+ratio[1, 4] <- round(log(show[1, 4] / lesssp[1, 4]),4)
+ratio[2,] <- c("RF_5.36/6.02", "KNN_10.34/10.35", "GBM_5.61/5.95", "SVR_MAE5.60/7.30")
+ratio<-t(ratio)
+ratio<-as.data.frame(ratio)
+ratio[,1]<-as.numeric(ratio[,1])
+colnames(ratio)<-c("value","model")
+
+data <- ratio
+ggplot(data, aes(x = model, y = value)) +
+  geom_bar(stat = "identity", aes(fill = value >= 0), position = "identity", show.legend = FALSE) +
+  scale_fill_manual(values = c("orange", "steelblue")) +
+  labs(title = "The Relative Change in MAE",
+       x = "Model and Its Change in MAE ", y = "Natural Logarithm of MAE Ratio") +
+  theme_minimal() +
+  geom_text(aes(label = value), vjust = ifelse(data$value >= 0, -0.5, 1), color = "black", size = 3)
+
+
+ggplot(df, aes(x = model, y = MAE, fill = model)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = format(MAE, nsmall = 3)), vjust = -0.5, color = "black", size = 3) +  
+  labs(title = "Bar Plot of Models' MAE",
+       x = "Model",
+       y = "MAE") +
+  theme_minimal()
+
+
+data<-rf
+data <- na.omit(data)
+data_scaled <- as.data.frame(scale(data[ , -which(names(data) == "w")]))
+data_scaled$w <- rf$w
+train_data <- data_scaled[284:1133, ]
+test_data <- data_scaled[1:283, ]
+set.seed(123)
+rf_model <- randomForest(w ~ ., data = train_data,n_trees=1000)
+importance_values <- importance(rf_model)
+print(importance_values)
+varImpPlot(rf_model)
+```
+
+```{r}
+gbm_model <- gbm(w ~ ., data = train_data, distribution = "gaussian", n.trees = 1000, interaction.depth = 4, shrinkage = 0.01)
+
+
+# 提取变量重要性
+importance <- summary(gbm_model, plotit = FALSE)
+
+# 将变量名设为因子，按照重要性排序
+importance$var <- factor(importance$var, levels = importance$var[order(importance$rel.inf)])
+
+# 绘制变量重要性图
+ggplot(importance, aes(x = var, y = rel.inf)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  xlab("Features") +
+  ylab("Relative Importance") +
+  ggtitle("GBM Model Feature Importance") +
+  theme(axis.text.y = element_text(size = 8))  # 调整y轴标签的字体大小
+
+par(mar = c(5, 8, 4, 2) + 0.1)
+
+summary(gbm_model, main = "GBM Model Variable Importance")
+
+```
+
